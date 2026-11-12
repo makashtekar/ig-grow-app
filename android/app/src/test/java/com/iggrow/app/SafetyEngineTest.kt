@@ -1,6 +1,8 @@
 package com.iggrow.app
 
+import com.iggrow.app.ig.IgGraphqlExecutor
 import com.iggrow.app.safety.ActionBudget
+import com.iggrow.app.safety.DeduplicationTracker
 import com.iggrow.app.safety.IgExecutionOutcome
 import com.iggrow.app.safety.SafetyEngine
 import com.iggrow.app.safety.WarmupTier
@@ -47,5 +49,34 @@ class SafetyEngineTest {
         assertTrue(SafetyEngine.isCircuitBreakerOutcome(IgExecutionOutcome.LOGIN_REQUIRED))
         assertFalse(SafetyEngine.isCircuitBreakerOutcome(IgExecutionOutcome.SUCCESS))
         assertFalse(SafetyEngine.isCircuitBreakerOutcome(IgExecutionOutcome.FAILED))
+    }
+
+    @Test
+    fun deduplicationTracker_expiresAfterWindow() {
+        val tracker = DeduplicationTracker(windowMs = 1_000L)
+        tracker.markInteracted("like:123", nowMs = 10_000L)
+        assertTrue(tracker.hasInteractedRecently("like:123", nowMs = 10_500L))
+        assertFalse(tracker.hasInteractedRecently("like:123", nowMs = 11_500L))
+    }
+
+    @Test
+    fun graphqlExecutor_classifies429AndChallengeAndLogin() {
+        val executor = IgGraphqlExecutor()
+        assertEquals(
+            IgExecutionOutcome.RATE_LIMITED_429,
+            executor.classifyResponse(429, "").outcome
+        )
+        assertEquals(
+            IgExecutionOutcome.CHALLENGE_REQUIRED,
+            executor.classifyResponse(400, """{"message":"challenge_required"}""").outcome
+        )
+        assertEquals(
+            IgExecutionOutcome.LOGIN_REQUIRED,
+            executor.classifyResponse(200, """{"require_login":true}""").outcome
+        )
+        assertEquals(
+            IgExecutionOutcome.SUCCESS,
+            executor.classifyResponse(200, """{"data":{"xig_media_like":{}}}""").outcome
+        )
     }
 }

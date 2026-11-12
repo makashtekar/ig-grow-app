@@ -10,8 +10,14 @@ import androidx.core.app.NotificationCompat
 import com.iggrow.app.cloud.GrowthApiClient
 import com.iggrow.app.cloud.TelemetryBatchRequest
 import com.iggrow.app.cloud.TelemetryEventDto
+import com.iggrow.app.ig.IgActionResult
+import com.iggrow.app.ig.IgGraphqlExecutor
+import com.iggrow.app.safety.ActionBudget
+import com.iggrow.app.safety.ActionQueueStore
 import com.iggrow.app.safety.IgExecutionOutcome
+import com.iggrow.app.safety.QueuedActionType
 import com.iggrow.app.safety.SafetyEngine
+import com.iggrow.app.safety.WarmupTier
 import com.iggrow.app.session.SessionVault
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,8 +31,9 @@ import java.time.Instant
 import java.time.LocalTime
 
 /**
- * Foreground service that fetches daily AI tasks from ig-grow-api and paces
- * execution on-device with randomized jitter and automatic circuit breaking.
+ * Foreground service that fetches daily AI tasks from ig-grow-api, discovers targets
+ * via IgGraphqlExecutor, enforces SafetyEngine budgets & 30-day deduplication, and
+ * paces one engagement action per randomized jitter interval.
  */
 class GrowthForegroundService : Service() {
 
@@ -55,6 +62,8 @@ class GrowthForegroundService : Service() {
 
     private suspend fun runGrowthLoop() {
         val vault = SessionVault(applicationContext)
+        val actionStore = ActionQueueStore(applicationContext)
+        val executor = IgGraphqlExecutor()
         val api = GrowthApiClient.create()
         val session = vault.getSession() ?: return
 
@@ -80,28 +89,122 @@ class GrowthForegroundService : Service() {
                 return
             }
 
-            updateNotification("Running Day ${tasks.dayNumber}: ${tasks.focus}")
+            val tier = runCatching { WarmupTier.valueOf(tasks.tier) }.getOrDefault(WarmupTier.TIER_1_COLD)
+            val safeBudget = SafetyEngine.clampBudget(
+                ActionBudget(
+                    storyViews = tasks.actionBudgets.storyViews,
+                    storyLikes = tasks.actionBudgets.storyLikes,
+                    postLikes = tasks.actionBudgets.postLikes,
+                    comments = tasks.actionBudgets.comments,
+                    follows = tasks.actionBudgets.follows
+                ),
+                tier
+            )
+            val counters = actionStore.getTodayCounters()
 
-            // Heartbeat telemetry; individual discovery + engagement actions will be
-            // dispatched from the Room action queue in the next iteration.
-            runCatching {
-                api.sendTelemetry(
-                    devUid = session.dsUserId,
-                    body = TelemetryBatchRequest(
-                        dsUserId = session.dsUserId,
-                        events = listOf(
-                            TelemetryEventDto(
-                                actionType = "DISCOVERY",
-                                outcome = IgExecutionOutcome.SUCCESS.name,
-                                executedAt = Instant.now().toString()
+            val targetHandle = tasks.discoverySources
+                .sortedByDescending { it.priority }
+                .firstOrNull { it.type == "COMPETITOR_POSTS" || it.type == "COMPETITOR_LIKERS" }
+                ?.target
+
+            var actionTypePerformed: QueuedActionType? = null
+            var actionResult: IgActionResult? = null
+            var targetIdUsed: String? = null
+
+            if (targetHandle != null && counters.postLikes < safeBudget.postLikes) {
+                val (discoverRes, mediaList) = executor.fetchUserPosts(session, targetHandle)
+                if (SafetyEngine.isCircuitBreakerOutcome(discoverRes.outcome)) {
+                    reportAndHalt(api, session.dsUserId, "DISCOVERY", discoverRes, null)
+                    return
+                }
+                val candidate = mediaList.firstOrNull { !actionStore.hasInteractedRecently("like:${it.mediaId}") }
+                if (candidate != null) {
+                    actionTypePerformed = QueuedActionType.POST_LIKE
+                    targetIdUsed = candidate.mediaId
+                    actionResult = executor.likeMedia(session, candidate.mediaId)
+                    if (actionResult.outcome == IgExecutionOutcome.SUCCESS) {
+                        actionStore.markInteracted("like:${candidate.mediaId}")
+                        actionStore.incrementCounter(QueuedActionType.POST_LIKE)
+                    }
+                }
+            } else if (targetHandle != null && counters.comments < safeBudget.comments && tasks.commentTemplates.isNotEmpty()) {
+                val (discoverRes, mediaList) = executor.fetchUserPosts(session, targetHandle)
+                if (SafetyEngine.isCircuitBreakerOutcome(discoverRes.outcome)) {
+                    reportAndHalt(api, session.dsUserId, "DISCOVERY", discoverRes, null)
+                    return
+                }
+                val candidate = mediaList.firstOrNull { !actionStore.hasInteractedRecently("comment:${it.mediaId}") }
+                if (candidate != null) {
+                    val comment = tasks.commentTemplates.random()
+                    actionTypePerformed = QueuedActionType.COMMENT
+                    targetIdUsed = candidate.mediaId
+                    actionResult = executor.commentMedia(session, candidate.mediaId, comment)
+                    if (actionResult.outcome == IgExecutionOutcome.SUCCESS) {
+                        actionStore.markInteracted("comment:${candidate.mediaId}")
+                        actionStore.incrementCounter(QueuedActionType.COMMENT)
+                    }
+                }
+            }
+
+            if (actionResult != null && actionTypePerformed != null) {
+                if (SafetyEngine.isCircuitBreakerOutcome(actionResult.outcome)) {
+                    reportAndHalt(api, session.dsUserId, actionTypePerformed.name, actionResult, targetIdUsed)
+                    return
+                }
+                updateNotification("Day ${tasks.dayNumber}: ${actionTypePerformed.name} -> ${actionResult.outcome}")
+                runCatching {
+                    api.sendTelemetry(
+                        devUid = session.dsUserId,
+                        body = TelemetryBatchRequest(
+                            dsUserId = session.dsUserId,
+                            events = listOf(
+                                TelemetryEventDto(
+                                    actionType = actionTypePerformed.name,
+                                    outcome = actionResult.outcome.name,
+                                    targetId = targetIdUsed,
+                                    httpStatus = actionResult.httpStatus,
+                                    errorMessage = actionResult.errorMessage,
+                                    executedAt = Instant.now().toString()
+                                )
                             )
                         )
                     )
-                )
+                }
+            } else {
+                updateNotification("Day ${tasks.dayNumber}: Waiting for next window")
             }
 
             delay(SafetyEngine.nextJitterDelayMs())
         }
+    }
+
+    private suspend fun reportAndHalt(
+        api: com.iggrow.app.cloud.GrowthApiService,
+        dsUserId: String,
+        actionType: String,
+        result: IgActionResult,
+        targetId: String?
+    ) {
+        updateNotification("Safety Pause: ${result.outcome}")
+        runCatching {
+            api.sendTelemetry(
+                devUid = dsUserId,
+                body = TelemetryBatchRequest(
+                    dsUserId = dsUserId,
+                    events = listOf(
+                        TelemetryEventDto(
+                            actionType = actionType,
+                            outcome = result.outcome.name,
+                            targetId = targetId,
+                            httpStatus = result.httpStatus,
+                            errorMessage = result.errorMessage,
+                            executedAt = Instant.now().toString()
+                        )
+                    )
+                )
+            )
+        }
+        stopSelf()
     }
 
     private fun ensureNotificationChannel() {

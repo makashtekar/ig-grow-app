@@ -12,7 +12,21 @@ import java.util.UUID
 data class IgActionResult(
     val outcome: IgExecutionOutcome,
     val httpStatus: Int,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val rawBody: String = ""
+)
+
+data class DiscoveredMedia(
+    val mediaId: String,
+    val ownerUserId: String,
+    val ownerUsername: String
+)
+
+data class DiscoveredStory(
+    val reelId: String,
+    val mediaId: String,
+    val ownerUserId: String,
+    val takenAt: Long
 )
 
 /**
@@ -124,6 +138,81 @@ class IgGraphqlExecutor(
         )
     }
 
+    fun fetchUserPosts(session: IgSession, username: String, count: Int = 12): Pair<IgActionResult, List<DiscoveredMedia>> {
+        val variables = gson.toJson(
+            mapOf(
+                "data" to mapOf("count" to count, "include_relationship_info" to true),
+                "username" to username.removePrefix("@")
+            )
+        )
+        val result = executeMutation(
+            session = session,
+            friendlyName = "PolarisProfilePostsQuery",
+            docId = DOC_ID_PROFILE_POSTS,
+            variablesJson = variables,
+            referer = "https://www.instagram.com/${username.removePrefix("@")}/"
+        )
+        if (result.outcome != IgExecutionOutcome.SUCCESS) return result to emptyList()
+        val media = parseDiscoveredMedia(result.rawBody, username.removePrefix("@"))
+        return result to media
+    }
+
+    fun fetchUserStories(session: IgSession, reelId: String): Pair<IgActionResult, List<DiscoveredStory>> {
+        val variables = gson.toJson(mapOf("reel_ids_arr" to listOf(reelId)))
+        val result = executeMutation(
+            session = session,
+            friendlyName = "PolarisStoriesV3ReelPageStandaloneQuery",
+            docId = DOC_ID_STORY_REEL,
+            variablesJson = variables,
+            referer = "https://www.instagram.com/"
+        )
+        if (result.outcome != IgExecutionOutcome.SUCCESS) return result to emptyList()
+        val stories = parseDiscoveredStories(result.rawBody, reelId)
+        return result to stories
+    }
+
+    internal fun parseDiscoveredMedia(rawBody: String, fallbackUsername: String): List<DiscoveredMedia> {
+        val root = runCatching { gson.fromJson(rawBody, JsonObject::class.java) }.getOrNull() ?: return emptyList()
+        val edges = root.getAsJsonObject("data")
+            ?.getAsJsonObject("xdt_api__v1__feed__user_timeline_graphql_connection")
+            ?.getAsJsonArray("edges") ?: return emptyList()
+        return edges.mapNotNull { el ->
+            val node = el.asJsonObject.getAsJsonObject("node") ?: return@mapNotNull null
+            val mediaId = node.get("pk")?.asString ?: node.get("id")?.asString ?: return@mapNotNull null
+            val user = node.getAsJsonObject("user")
+            val ownerId = user?.get("pk")?.asString ?: user?.get("id")?.asString ?: ""
+            val ownerName = user?.get("username")?.asString ?: fallbackUsername
+            DiscoveredMedia(mediaId = mediaId, ownerUserId = ownerId, ownerUsername = ownerName)
+        }
+    }
+
+    internal fun parseDiscoveredStories(rawBody: String, fallbackReelId: String): List<DiscoveredStory> {
+        val root = runCatching { gson.fromJson(rawBody, JsonObject::class.java) }.getOrNull() ?: return emptyList()
+        val reels = root.getAsJsonObject("data")
+            ?.getAsJsonObject("xdt_api__v1__feed__reels_media")
+            ?.getAsJsonArray("reels_media") ?: return emptyList()
+        val out = mutableListOf<DiscoveredStory>()
+        for (reelEl in reels) {
+            val reelObj = reelEl.asJsonObject
+            val reelId = reelObj.get("id")?.asString ?: fallbackReelId
+            val items = reelObj.getAsJsonArray("items") ?: continue
+            for (itemEl in items) {
+                val item = itemEl.asJsonObject
+                val mediaId = item.get("pk")?.asString ?: item.get("id")?.asString ?: continue
+                val takenAt = item.get("taken_at")?.asLong ?: (System.currentTimeMillis() / 1000L)
+                out.add(
+                    DiscoveredStory(
+                        reelId = reelId,
+                        mediaId = mediaId,
+                        ownerUserId = reelId,
+                        takenAt = takenAt
+                    )
+                )
+            }
+        }
+        return out
+    }
+
     private fun executeMutation(
         session: IgSession,
         friendlyName: String,
@@ -205,7 +294,7 @@ class IgGraphqlExecutor(
                 return IgActionResult(IgExecutionOutcome.FAILED, statusCode, errText)
             }
         }
-        return IgActionResult(IgExecutionOutcome.SUCCESS, statusCode)
+        return IgActionResult(IgExecutionOutcome.SUCCESS, statusCode, rawBody = rawBody)
     }
 
     companion object {
@@ -215,5 +304,7 @@ class IgGraphqlExecutor(
         const val DOC_ID_COMMENT_MEDIA = "29086430320952860"
         const val DOC_ID_VIEW_STORY = "26234228992942885"
         const val DOC_ID_LIKE_STORY = "26938887309082050"
+        const val DOC_ID_PROFILE_POSTS = "28834890909485062"
+        const val DOC_ID_STORY_REEL = "29184890191114309"
     }
 }
