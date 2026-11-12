@@ -22,6 +22,16 @@ data class DailyCounters(
     val follows: Int = 0
 )
 
+data class ActivityLogEntry(
+    val actionType: String,
+    val targetHandle: String?,
+    val targetId: String?,
+    val outcome: String,
+    val httpStatus: Int,
+    val message: String,
+    val timestampMs: Long = System.currentTimeMillis()
+)
+
 /**
  * Tracks 30-day target deduplication and daily executed action counts.
  * Pure in-memory logic is separated in [DeduplicationTracker] for JVM unit testing.
@@ -95,8 +105,20 @@ class ActionQueueStore(context: Context) {
         return updated
     }
 
+    fun getActivityLog(): List<ActivityLogEntry> {
+        val raw = prefs.getString(KEY_ACTIVITY_LOG, null) ?: return emptyList()
+        val type = object : TypeToken<List<ActivityLogEntry>>() {}.type
+        return runCatching { gson.fromJson<List<ActivityLogEntry>>(raw, type) }.getOrNull().orEmpty()
+    }
+
+    fun appendActivity(entry: ActivityLogEntry) {
+        val updated = (listOf(entry) + getActivityLog()).take(50)
+        prefs.edit().putString(KEY_ACTIVITY_LOG, gson.toJson(updated)).apply()
+    }
+
     companion object {
         private const val KEY_DEDUP_MAP = "dedup_map_json"
         private const val KEY_DAILY_COUNTERS = "daily_counters_json"
+        private const val KEY_ACTIVITY_LOG = "activity_log_json"
     }
 }

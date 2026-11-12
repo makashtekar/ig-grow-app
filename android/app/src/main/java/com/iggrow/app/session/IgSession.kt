@@ -9,6 +9,8 @@ data class IgSession(
     val fbDtsg: String,
     val lsd: String,
     val userAgent: String,
+    val jazoest: String = "",
+    val wwwClaim: String = "",
     val igAppId: String = "936619743392459",
     val asbdId: String = "359341",
     val capturedAtMs: Long = System.currentTimeMillis()

@@ -12,7 +12,10 @@ import {
 } from "./storage/store.js";
 
 const storeMode = process.env.STORE_MODE || "memory";
-const devBypassAuth = process.env.DEV_BYPASS_AUTH === "true";
+const hasFirebaseConfig = Boolean(process.env.FIREBASE_PROJECT_ID?.trim());
+const devBypassAuth =
+  process.env.DEV_BYPASS_AUTH === "true" ||
+  (process.env.DEV_BYPASS_AUTH !== "false" && !hasFirebaseConfig);
 
 if (storeMode === "firestore" || !devBypassAuth) {
   if (getApps().length === 0) {
@@ -26,13 +29,15 @@ if (storeMode === "firestore" || !devBypassAuth) {
 const store: GrowthStore =
   storeMode === "firestore" ? new FirestoreGrowthStore() : new InMemoryGrowthStore();
 
-const geminiKey = process.env.GEMINI_API_KEY;
-const planner: PlannerService = geminiKey
-  ? new GeminiGrowthPlanner(geminiKey)
+const rawGeminiKey = (process.env.GEMINI_API_KEY || "").trim();
+const hasValidGeminiKey =
+  rawGeminiKey.length > 0 && rawGeminiKey !== "your-gemini-api-key";
+const planner: PlannerService = hasValidGeminiKey
+  ? new GeminiGrowthPlanner(rawGeminiKey)
   : new HeuristicFallbackPlanner();
 
-if (!geminiKey) {
-  console.warn("[ig-grow-api] GEMINI_API_KEY not set; using HeuristicFallbackPlanner.");
+if (!hasValidGeminiKey) {
+  console.warn("[ig-grow-api] GEMINI_API_KEY not configured; using HeuristicFallbackPlanner (no billing required).");
 }
 
 const app = createApp({ store, planner, devBypassAuth });

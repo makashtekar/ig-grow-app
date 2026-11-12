@@ -32,7 +32,15 @@ class SessionVault(context: Context) {
 
     fun getSession(): IgSession? {
         val raw = prefs.getString(KEY_SESSION, null) ?: return null
-        return runCatching { gson.fromJson(raw, IgSession::class.java) }.getOrNull()
+        val parsed = runCatching { gson.fromJson(raw, IgSession::class.java) }.getOrNull() ?: return null
+        return parsed.copy(
+            fbDtsg = (parsed.fbDtsg as String?).orEmpty(),
+            lsd = (parsed.lsd as String?).orEmpty(),
+            jazoest = (parsed.jazoest as String?).orEmpty(),
+            wwwClaim = (parsed.wwwClaim as String?).orEmpty(),
+            igAppId = (parsed.igAppId as String?).orEmpty().ifBlank { "936619743392459" },
+            asbdId = (parsed.asbdId as String?).orEmpty().ifBlank { "359341" }
+        )
     }
 
     fun clearSession() {

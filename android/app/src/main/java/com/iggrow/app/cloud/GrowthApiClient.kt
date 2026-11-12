@@ -75,7 +75,8 @@ data class PlanResponse(val plan: GrowthPlanDto)
 data class ApprovePlanRequest(
     val dsUserId: String,
     val planId: String,
-    val commentTemplates: List<String>? = null
+    val commentTemplates: List<String>? = null,
+    val dailySchedules: List<DayPlanDto>? = null
 )
 
 data class ActiveHoursDto(val start: Int, val end: Int, val timezone: String)

@@ -1,5 +1,6 @@
 package com.iggrow.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,8 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -19,15 +18,20 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.iggrow.app.cloud.RegisterAccountRequest
 import com.iggrow.app.session.IgSession
+import com.iggrow.app.ui.theme.GradientButton
+import com.iggrow.app.ui.theme.StudioCard
+import com.iggrow.app.ui.theme.StudioColors
 import java.util.TimeZone
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -51,97 +55,117 @@ fun GoalOnboardingScreen(
     )
 
     Scaffold(
+        containerColor = StudioColors.BgObsidian,
         topBar = {
-            TopAppBar(title = { Text("Growth Setup (@${session.username})") })
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = StudioColors.SurfaceCard,
+                    titleContentColor = StudioColors.TextPrimary
+                ),
+                title = {
+                    Column {
+                        Text("IG Grow Studio", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Configure growth for @${session.username}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StudioColors.TextSecondary
+                        )
+                    }
+                }
+            )
         }
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(StudioColors.BgObsidian)
                 .padding(padding)
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Primary Goal", style = MaterialTheme.typography.titleMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                goals.forEach { (key, label) ->
-                    FilterChip(
-                        selected = selectedGoal == key,
-                        onClick = { selectedGoal = key },
-                        label = { Text(label) }
+            StudioCard {
+                Text("Primary Goal", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    goals.forEach { (key, label) ->
+                        FilterChip(
+                            selected = selectedGoal == key,
+                            onClick = { selectedGoal = key },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+            }
+
+            StudioCard {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = niche,
+                        onValueChange = { niche = it },
+                        label = { Text("Your Niche (e.g. Home Workouts, Nature, SaaS)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = competitors,
+                        onValueChange = { competitors = it },
+                        label = { Text("Competitor Handles (comma-separated)") },
+                        placeholder = { Text("fantastic.life, gymshark") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = hashtags,
+                        onValueChange = { hashtags = it },
+                        label = { Text("Target Hashtags (comma-separated)") },
+                        placeholder = { Text("nature, fitness") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = tone,
+                        onValueChange = { tone = it },
+                        label = { Text("Comment Tone") },
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
 
-            OutlinedTextField(
-                value = niche,
-                onValueChange = { niche = it },
-                label = { Text("Your Niche (e.g. Home Workouts, SaaS, Travel)") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = competitors,
-                onValueChange = { competitors = it },
-                label = { Text("Competitor Handles (comma-separated)") },
-                placeholder = { Text("nike, gymshark") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = hashtags,
-                onValueChange = { hashtags = it },
-                label = { Text("Target Hashtags (comma-separated)") },
-                placeholder = { Text("homeworkout, fitness") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = tone,
-                onValueChange = { tone = it },
-                label = { Text("Comment Tone") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
             if (!errorMessage.isNullOrBlank()) {
-                Text(errorMessage, color = MaterialTheme.colorScheme.error)
+                Text(errorMessage, color = StudioColors.ErrorRose)
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
-            Button(
-                onClick = {
-                    val compList = competitors.split(",")
-                        .map { it.trim().removePrefix("@") }
-                        .filter { it.isNotBlank() }
-                        .ifEmpty { listOf(session.username) }
-                    val tagList = hashtags.split(",")
-                        .map { it.trim().removePrefix("#") }
-                        .filter { it.isNotBlank() }
-                        .ifEmpty { listOf(niche.trim().replace(" ", "")) }
-
-                    onSubmitGoal(
-                        RegisterAccountRequest(
-                            dsUserId = session.dsUserId,
-                            username = session.username,
-                            goal = selectedGoal,
-                            niche = niche.trim().ifBlank { "lifestyle" },
-                            competitorHandles = compList,
-                            targetHashtags = tagList,
-                            commentTone = tone.trim().ifBlank { "authentic" },
-                            timezone = TimeZone.getDefault().id
-                        )
-                    )
-                },
+            GradientButton(
+                text = if (isSubmitting) "Generating 7-Day Plan..." else "Generate 7-Day Plan",
                 enabled = !isSubmitting && niche.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                if (isSubmitting) {
-                    CircularProgressIndicator(modifier = Modifier.height(20.dp))
-                } else {
-                    Text("Generate 7-Day AI Plan")
-                }
+                val compList = competitors.split(",")
+                    .map { it.trim().removePrefix("@") }
+                    .filter { it.isNotBlank() }
+                    .ifEmpty { listOf(session.username) }
+                val tagList = hashtags.split(",")
+                    .map { it.trim().removePrefix("#") }
+                    .filter { it.isNotBlank() }
+                    .ifEmpty { listOf(niche.trim().replace(" ", "")) }
+
+                onSubmitGoal(
+                    RegisterAccountRequest(
+                        dsUserId = session.dsUserId,
+                        username = session.username,
+                        goal = selectedGoal,
+                        niche = niche.trim().ifBlank { "lifestyle" },
+                        competitorHandles = compList,
+                        targetHashtags = tagList,
+                        commentTone = tone.trim().ifBlank { "authentic" },
+                        timezone = TimeZone.getDefault().id
+                    )
+                )
             }
         }
     }

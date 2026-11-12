@@ -1,5 +1,6 @@
 package com.iggrow.app.ig
 
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.iggrow.app.safety.IgExecutionOutcome
@@ -30,15 +31,73 @@ data class DiscoveredStory(
 )
 
 /**
- * Executes Instagram Web GraphQL mutations over the device's residential IP
- * using the doc_ids and headers documented in docs/03-IG-ENGAGEMENT-API-SPEC.md.
+ * Executes Instagram Web GraphQL queries & mutations over the device's residential IP,
+ * mirroring earn-share-mobile-app's InstagramService + InstagramClient request preparation
+ * and SessionSyncManager token extraction.
  */
 class IgGraphqlExecutor(
-    private val client: OkHttpClient = OkHttpClient()
+    private val client: OkHttpClient = OkHttpClient(),
+    private val logger: (String) -> Unit = { msg -> runCatching { Log.d(TAG, msg) } }
 ) {
     private val gson = Gson()
 
+    /**
+     * Refresh fb_dtsg, lsd, and jazoest from https://www.instagram.com/ if missing,
+     * matching earn-share-mobile-app/SessionSyncManager.kt.
+     */
+    fun ensureWebTokens(session: IgSession): IgSession {
+        val curDtsg = (session.fbDtsg as String?).orEmpty()
+        val curLsd = (session.lsd as String?).orEmpty()
+        val curJazoest = (session.jazoest as String?).orEmpty()
+        val curClaim = (session.wwwClaim as String?).orEmpty()
+        if (curDtsg.isNotBlank() && curLsd.isNotBlank() && curJazoest.isNotBlank()) {
+            return session
+        }
+        logger("Refreshing web tokens (fb_dtsg/lsd/jazoest) from https://www.instagram.com/")
+        val req = Request.Builder()
+            .url("https://www.instagram.com/")
+            .get()
+            .header("cookie", session.cookieHeader)
+            .header("user-agent", session.userAgent)
+            .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("accept-language", "en-US,en;q=0.9")
+            .build()
+
+        return try {
+            client.newCall(req).execute().use { resp ->
+                val html = resp.body?.string().orEmpty()
+                logger("Token refresh GET / -> HTTP ${resp.code}, htmlLen=${html.length}")
+                if (!resp.isSuccessful || html.isBlank()) return session
+
+                val fbDtsgRaw = "\"fb_dtsg\":\"([^\"]+)\"".toRegex().find(html)?.groupValues?.get(1)
+                    ?: "\"DTSGInitialData\",\\[\\],\\{\"token\":\"([^\"]+)\"\\}".toRegex().find(html)?.groupValues?.get(1)
+                    ?: session.fbDtsg
+                val fbDtsg = fbDtsgRaw.replace("\\\"", "\"").replace("\\/", "/")
+
+                val lsdRaw = "\"LSD\",\\[\\],\\{\"token\":\"([^\"]+)\"\\}".toRegex().find(html)?.groupValues?.get(1)
+                    ?: "\"lsd\":\"([^\"]+)\"".toRegex().find(html)?.groupValues?.get(1)
+                    ?: session.lsd
+
+                var jazoest = "jazoest=(\\d+)".toRegex().find(html)?.groupValues?.get(1).orEmpty()
+                if (jazoest.isBlank() && fbDtsg.isNotBlank()) {
+                    jazoest = computeJazoest(fbDtsg)
+                }
+
+                logger("Extracted tokens: fbDtsg=${fbDtsg.isNotBlank()}, lsd=${lsdRaw.isNotBlank()}, jazoest=${jazoest.isNotBlank()}")
+                session.copy(
+                    fbDtsg = fbDtsg,
+                    lsd = lsdRaw,
+                    jazoest = jazoest.ifBlank { session.jazoest }
+                )
+            }
+        } catch (ex: Exception) {
+            logger("Token refresh failed: ${ex.message}")
+            session
+        }
+    }
+
     fun followUser(session: IgSession, targetUserId: String): IgActionResult {
+        val ready = ensureWebTokens(session)
         val variables = gson.toJson(
             mapOf(
                 "target_user_id" to targetUserId,
@@ -46,7 +105,7 @@ class IgGraphqlExecutor(
             )
         )
         return executeMutation(
-            session = session,
+            session = ready,
             friendlyName = "usePolarisFollowMutation",
             docId = DOC_ID_FOLLOW,
             variablesJson = variables,
@@ -55,10 +114,11 @@ class IgGraphqlExecutor(
     }
 
     fun likeMedia(session: IgSession, mediaId: String, trackingToken: String = ""): IgActionResult {
+        val ready = ensureWebTokens(session)
         val variables = gson.toJson(
             mapOf(
                 "input" to mapOf(
-                    "actor_id" to session.dsUserId,
+                    "actor_id" to ready.dsUserId,
                     "client_mutation_id" to UUID.randomUUID().toString(),
                     "container_module" to "feed_timeline",
                     "media_id" to mediaId,
@@ -67,7 +127,7 @@ class IgGraphqlExecutor(
             )
         )
         return executeMutation(
-            session = session,
+            session = ready,
             friendlyName = "usePolarisLikeMediaXIGLikeMutation",
             docId = DOC_ID_LIKE_MEDIA,
             variablesJson = variables,
@@ -76,6 +136,7 @@ class IgGraphqlExecutor(
     }
 
     fun commentMedia(session: IgSession, mediaId: String, commentText: String): IgActionResult {
+        val ready = ensureWebTokens(session)
         val variables = gson.toJson(
             mapOf(
                 "data" to mapOf(
@@ -85,7 +146,7 @@ class IgGraphqlExecutor(
             )
         )
         return executeMutation(
-            session = session,
+            session = ready,
             friendlyName = "PolarisPostCommentInputRevampedMutation",
             docId = DOC_ID_COMMENT_MEDIA,
             variablesJson = variables,
@@ -101,6 +162,7 @@ class IgGraphqlExecutor(
         reelMediaTakenAt: Long,
         viewSeenAt: Long = System.currentTimeMillis() / 1000L
     ): IgActionResult {
+        val ready = ensureWebTokens(session)
         val variables = gson.toJson(
             mapOf(
                 "reelId" to reelId,
@@ -111,7 +173,7 @@ class IgGraphqlExecutor(
             )
         )
         return executeMutation(
-            session = session,
+            session = ready,
             friendlyName = "PolarisStoriesV3SeenMutation",
             docId = DOC_ID_VIEW_STORY,
             variablesJson = variables,
@@ -120,17 +182,18 @@ class IgGraphqlExecutor(
     }
 
     fun likeStory(session: IgSession, mediaId: String): IgActionResult {
+        val ready = ensureWebTokens(session)
         val variables = gson.toJson(
             mapOf(
                 "input" to mapOf(
-                    "actor_id" to session.dsUserId,
+                    "actor_id" to ready.dsUserId,
                     "client_mutation_id" to UUID.randomUUID().toString(),
                     "media_id" to mediaId
                 )
             )
         )
         return executeMutation(
-            session = session,
+            session = ready,
             friendlyName = "usePolarisStoriesV4LikeMutationLikeMutation",
             docId = DOC_ID_LIKE_STORY,
             variablesJson = variables,
@@ -139,28 +202,41 @@ class IgGraphqlExecutor(
     }
 
     fun fetchUserPosts(session: IgSession, username: String, count: Int = 12): Pair<IgActionResult, List<DiscoveredMedia>> {
+        val ready = ensureWebTokens(session)
+        val cleanName = username.trim().removePrefix("@")
         val variables = gson.toJson(
             mapOf(
-                "data" to mapOf("count" to count, "include_relationship_info" to true),
-                "username" to username.removePrefix("@")
+                "data" to mapOf(
+                    "count" to count,
+                    "include_reel_media_seen_timestamp" to true,
+                    "include_relationship_info" to true,
+                    "latest_besties_reel_media" to true,
+                    "latest_reel_media" to true
+                ),
+                "username" to cleanName,
+                "__relay_internal__pv__PolarisMultiCaptionCarouselEnabledrelayprovider" to true,
+                "__relay_internal__pv__PolarisShortDramaEnabledrelayprovider" to true,
+                "__relay_internal__pv__PolarisThreadsStyleCommentsEnabledrelayprovider" to false,
+                "__relay_internal__pv__PolarisReelsRecoDebugOverlayEnabledrelayprovider" to false
             )
         )
         val result = executeMutation(
-            session = session,
+            session = ready,
             friendlyName = "PolarisProfilePostsQuery",
             docId = DOC_ID_PROFILE_POSTS,
             variablesJson = variables,
-            referer = "https://www.instagram.com/${username.removePrefix("@")}/"
+            referer = "https://www.instagram.com/$cleanName/"
         )
         if (result.outcome != IgExecutionOutcome.SUCCESS) return result to emptyList()
-        val media = parseDiscoveredMedia(result.rawBody, username.removePrefix("@"))
+        val media = parseDiscoveredMedia(result.rawBody, cleanName)
         return result to media
     }
 
     fun fetchUserStories(session: IgSession, reelId: String): Pair<IgActionResult, List<DiscoveredStory>> {
+        val ready = ensureWebTokens(session)
         val variables = gson.toJson(mapOf("reel_ids_arr" to listOf(reelId)))
         val result = executeMutation(
-            session = session,
+            session = ready,
             friendlyName = "PolarisStoriesV3ReelPageStandaloneQuery",
             docId = DOC_ID_STORY_REEL,
             variablesJson = variables,
@@ -220,42 +296,63 @@ class IgGraphqlExecutor(
         variablesJson: String,
         referer: String
     ): IgActionResult {
-        val body = FormBody.Builder()
+        val fbDtsg = (session.fbDtsg as String?).orEmpty()
+        val lsd = (session.lsd as String?).orEmpty()
+        val jazoest = (session.jazoest as String?).orEmpty().ifBlank {
+            if (fbDtsg.isNotBlank()) computeJazoest(fbDtsg) else ""
+        }
+        val wwwClaim = (session.wwwClaim as String?).orEmpty()
+        logger("-> POST $IG_GRAPHQL_URL | op=$friendlyName | doc_id=$docId | hasDtsg=${fbDtsg.isNotBlank()} | hasLsd=${lsd.isNotBlank()} | hasJazoest=${jazoest.isNotBlank()}")
+
+        val bodyBuilder = FormBody.Builder()
             .add("av", session.dsUserId)
+            .add("__a", "1")
+            .add("__req", "6")
+            .add("__comet_req", "7")
             .add("__d", "www")
             .add("__user", "0")
-            .add("__a", "1")
-            .add("fb_dtsg", session.fbDtsg)
-            .add("lsd", session.lsd)
+            .add("fb_dtsg", fbDtsg)
+            .add("jazoest", jazoest)
+            .add("lsd", lsd)
             .add("fb_api_caller_class", "RelayModern")
             .add("fb_api_req_friendly_name", friendlyName)
             .add("server_timestamps", "true")
-            .add("variables", variablesJson)
             .add("doc_id", docId)
-            .build()
+            .add("variables", variablesJson)
 
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(IG_GRAPHQL_URL)
-            .post(body)
+            .post(bodyBuilder.build())
             .header("accept", "*/*")
+            .header("accept-language", "en-US,en;q=0.9")
             .header("content-type", "application/x-www-form-urlencoded")
             .header("cookie", session.cookieHeader)
             .header("origin", "https://www.instagram.com")
             .header("referer", referer)
             .header("user-agent", session.userAgent)
-            .header("x-asbd-id", session.asbdId)
+            .header("x-asbd-id", (session.asbdId as String?).orEmpty().ifBlank { "359341" })
             .header("x-csrftoken", session.csrfToken)
             .header("x-fb-friendly-name", friendlyName)
-            .header("x-fb-lsd", session.lsd)
-            .header("x-ig-app-id", session.igAppId)
-            .build()
+            .header("x-fb-lsd", lsd)
+            .header("x-ig-app-id", (session.igAppId as String?).orEmpty().ifBlank { "936619743392459" })
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("sec-fetch-site", "same-origin")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-dest", "empty")
+            .header("priority", "u=1, i")
+
+        if (wwwClaim.isNotBlank() && wwwClaim != "0") {
+            requestBuilder.header("x-ig-www-claim", wwwClaim)
+        }
 
         return try {
-            client.newCall(request).execute().use { response ->
+            client.newCall(requestBuilder.build()).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
+                logger("<- HTTP ${response.code} | op=$friendlyName | body=${rawBody.take(300)}")
                 classifyResponse(response.code, rawBody)
             }
         } catch (ex: Exception) {
+            logger("!! Exception | op=$friendlyName | err=${ex.message}")
             IgActionResult(
                 outcome = IgExecutionOutcome.FAILED,
                 httpStatus = 0,
@@ -297,7 +394,14 @@ class IgGraphqlExecutor(
         return IgActionResult(IgExecutionOutcome.SUCCESS, statusCode, rawBody = rawBody)
     }
 
+    private fun computeJazoest(fbDtsg: String): String {
+        var sum = 0
+        for (c in fbDtsg) sum += c.code
+        return "2$sum"
+    }
+
     companion object {
+        private const val TAG = "IG_GROW_API"
         private const val IG_GRAPHQL_URL = "https://www.instagram.com/api/graphql"
         const val DOC_ID_FOLLOW = "26508036048874888"
         const val DOC_ID_LIKE_MEDIA = "27182485238052618"
