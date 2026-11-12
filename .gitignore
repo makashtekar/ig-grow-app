@@ -1,0 +1,26 @@
+# OS & IDE
+.DS_Store
+.idea/
+*.iml
+.vscode/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+serviceAccountKey.json
+*.jks
+*.keystore
+
+# Node / TypeScript
+node_modules/
+dist/
+npm-debug.log*
+
+# Android / Gradle
+.gradle/
+build/
+**/build/
+local.properties
+*.apk
+*.aab
