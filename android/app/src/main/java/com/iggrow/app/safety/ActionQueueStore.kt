@@ -60,6 +60,21 @@ class DeduplicationTracker(
     fun markInteracted(key: String, nowMs: Long = System.currentTimeMillis()) {
         seen[key] = nowMs
     }
+
+    fun hasRecentEmptyStories(target: String, nowMs: Long = System.currentTimeMillis(), cooldownMs: Long = 2 * 60 * 60 * 1000L): Boolean {
+        val key = "empty_stories:${target.removePrefix("@").lowercase()}"
+        val ts = seen[key] ?: return false
+        if (nowMs - ts > cooldownMs) {
+            seen.remove(key)
+            return false
+        }
+        return true
+    }
+
+    fun markNoStories(target: String, nowMs: Long = System.currentTimeMillis()) {
+        val key = "empty_stories:${target.removePrefix("@").lowercase()}"
+        seen[key] = nowMs
+    }
 }
 
 class ActionQueueStore(context: Context) {
@@ -82,6 +97,14 @@ class ActionQueueStore(context: Context) {
 
     fun markInteracted(targetKey: String) {
         dedup.markInteracted(targetKey)
+        prefs.edit().putString(KEY_DEDUP_MAP, gson.toJson(dedup.snapshot())).apply()
+    }
+
+    fun hasRecentEmptyStories(target: String): Boolean =
+        dedup.hasRecentEmptyStories(target)
+
+    fun markNoStories(target: String) {
+        dedup.markNoStories(target)
         prefs.edit().putString(KEY_DEDUP_MAP, gson.toJson(dedup.snapshot())).apply()
     }
 

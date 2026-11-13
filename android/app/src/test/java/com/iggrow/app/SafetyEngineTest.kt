@@ -79,4 +79,79 @@ class SafetyEngineTest {
             executor.classifyResponse(200, """{"data":{"xig_media_like":{}}}""").outcome
         )
     }
+
+    @Test
+    fun deduplicationTracker_handlesEmptyStoriesCooldown() {
+        val tracker = DeduplicationTracker(windowMs = 1_000L)
+        assertFalse(tracker.hasRecentEmptyStories("testuser", nowMs = 1_000L, cooldownMs = 500L))
+        tracker.markNoStories("testuser", nowMs = 1_000L)
+        assertTrue(tracker.hasRecentEmptyStories("testuser", nowMs = 1_200L, cooldownMs = 500L))
+        assertFalse(tracker.hasRecentEmptyStories("testuser", nowMs = 1_600L, cooldownMs = 500L))
+    }
+
+    @Test
+    fun graphqlExecutor_parsesMultipleMediaFormats() {
+        val executor = IgGraphqlExecutor()
+        // Format 1: GraphQL timeline connection
+        val gqlBody = """
+            {
+              "data": {
+                "xdt_api__v1__feed__user_timeline_graphql_connection": {
+                  "edges": [
+                    {
+                      "node": {
+                        "pk": "33445566",
+                        "user": { "pk": "998877", "username": "creator1" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+        val media1 = executor.parseDiscoveredMedia(gqlBody, "creator1")
+        assertEquals(1, media1.size)
+        assertEquals("33445566", media1[0].mediaId)
+        assertEquals("998877", media1[0].ownerUserId)
+
+        // Format 2: web_profile_info format
+        val webBody = """
+            {
+              "data": {
+                "user": {
+                  "edge_owner_to_timeline_media": {
+                    "edges": [
+                      {
+                        "node": {
+                          "id": "11223344",
+                          "owner": { "id": "556677", "username": "creator2" }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+        """.trimIndent()
+        val media2 = executor.parseDiscoveredMedia(webBody, "creator2")
+        assertEquals(1, media2.size)
+        assertEquals("11223344", media2[0].mediaId)
+        assertEquals("556677", media2[0].ownerUserId)
+    }
+
+    @Test
+    fun graphqlExecutor_parsesEmptyStoriesWithoutCrashing() {
+        val executor = IgGraphqlExecutor()
+        val emptyStoriesBody = """
+            {
+              "data": {
+                "xdt_api__v1__feed__reels_media": {
+                  "reels_media": []
+                }
+              }
+            }
+        """.trimIndent()
+        val stories = executor.parseDiscoveredStories(emptyStoriesBody, "12345")
+        assertTrue(stories.isEmpty())
+    }
 }

@@ -227,14 +227,111 @@ class IgGraphqlExecutor(
             variablesJson = variables,
             referer = "https://www.instagram.com/$cleanName/"
         )
-        if (result.outcome != IgExecutionOutcome.SUCCESS) return result to emptyList()
-        val media = parseDiscoveredMedia(result.rawBody, cleanName)
-        return result to media
+        if (result.outcome == IgExecutionOutcome.SUCCESS) {
+            val media = parseDiscoveredMedia(result.rawBody, cleanName)
+            if (media.isNotEmpty()) return result to media
+        }
+
+        // Secondary fallback to web_profile_info (mirrors earn-share-mobile-app InstagramRepository)
+        logger("GraphQL returned 0 posts or non-success for @$cleanName; falling back to web_profile_info")
+        val (fallbackResult, fallbackMedia) = fetchUserPostsViaWebProfile(ready, cleanName)
+        if (fallbackMedia.isNotEmpty()) {
+            return fallbackResult to fallbackMedia
+        }
+        return if (result.outcome != IgExecutionOutcome.SUCCESS) result to emptyList() else fallbackResult to emptyList()
+    }
+
+    fun fetchUserPostsViaWebProfile(session: IgSession, username: String): Pair<IgActionResult, List<DiscoveredMedia>> {
+        val cleanName = username.trim().removePrefix("@")
+        val ready = ensureWebTokens(session)
+        val url = "https://www.instagram.com/api/v1/users/web_profile_info/?username=$cleanName"
+        val req = Request.Builder()
+            .url(url)
+            .get()
+            .header("cookie", ready.cookieHeader)
+            .header("user-agent", ready.userAgent)
+            .header("x-ig-app-id", (ready.igAppId as String?).orEmpty().ifBlank { "936619743392459" })
+            .header("x-asbd-id", (ready.asbdId as String?).orEmpty().ifBlank { "359341" })
+            .header("x-csrftoken", ready.csrfToken)
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("referer", "https://www.instagram.com/$cleanName/")
+            .header("accept", "*/*")
+            .header("accept-language", "en-US,en;q=0.9")
+            .build()
+
+        return try {
+            client.newCall(req).execute().use { response ->
+                val rawBody = response.body?.string().orEmpty()
+                logger("<- HTTP ${response.code} | web_profile_info | body=${rawBody.take(200)}")
+                val classification = classifyResponse(response.code, rawBody)
+                if (classification.outcome != IgExecutionOutcome.SUCCESS) {
+                    return classification to emptyList()
+                }
+                val media = parseDiscoveredMedia(rawBody, cleanName)
+                classification to media
+            }
+        } catch (ex: Exception) {
+            logger("!! Exception | web_profile_info | err=${ex.message}")
+            IgActionResult(IgExecutionOutcome.FAILED, 0, ex.message) to emptyList()
+        }
+    }
+
+    fun resolveUserId(session: IgSession, username: String): String? {
+        val cleanName = username.trim().removePrefix("@")
+        if (cleanName.all { it.isDigit() } && cleanName.isNotEmpty()) return cleanName
+        val ready = ensureWebTokens(session)
+
+        // Step 1: web_profile_info
+        val url = "https://www.instagram.com/api/v1/users/web_profile_info/?username=$cleanName"
+        val req = Request.Builder()
+            .url(url)
+            .get()
+            .header("cookie", ready.cookieHeader)
+            .header("user-agent", ready.userAgent)
+            .header("x-ig-app-id", (ready.igAppId as String?).orEmpty().ifBlank { "936619743392459" })
+            .header("x-asbd-id", (ready.asbdId as String?).orEmpty().ifBlank { "359341" })
+            .header("x-csrftoken", ready.csrfToken)
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("referer", "https://www.instagram.com/$cleanName/")
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                val root = runCatching { gson.fromJson(body, JsonObject::class.java) }.getOrNull()
+                val user = root?.getAsJsonObject("data")?.getAsJsonObject("user")
+                    ?: root?.getAsJsonObject("user")
+                val uid = user?.get("id")?.asString ?: user?.get("pk")?.asString
+                if (!uid.isNullOrBlank()) return uid
+            }
+        } catch (_: Exception) {}
+
+        // Step 2: Fallback regex on HTML
+        try {
+            val htmlReq = Request.Builder()
+                .url("https://www.instagram.com/$cleanName/")
+                .get()
+                .header("cookie", ready.cookieHeader)
+                .header("user-agent", ready.userAgent)
+                .build()
+            client.newCall(htmlReq).execute().use { resp ->
+                val html = resp.body?.string().orEmpty()
+                val match = "\"user_id\":\"(\\d+)\"".toRegex().find(html)?.groupValues?.get(1)
+                    ?: "\"profilePage_(\\d+)\"".toRegex().find(html)?.groupValues?.get(1)
+                if (!match.isNullOrBlank()) return match
+            }
+        } catch (_: Exception) {}
+
+        return null
     }
 
     fun fetchUserStories(session: IgSession, reelId: String): Pair<IgActionResult, List<DiscoveredStory>> {
         val ready = ensureWebTokens(session)
-        val variables = gson.toJson(mapOf("reel_ids_arr" to listOf(reelId)))
+        val variables = gson.toJson(
+            mapOf(
+                "reel_ids_arr" to listOf(reelId),
+                "__relay_internal__pv__PolarisCommunityNoteStoriesLabelEnabledrelayprovider" to true
+            )
+        )
         val result = executeMutation(
             session = ready,
             friendlyName = "PolarisStoriesV3ReelPageStandaloneQuery",
@@ -249,14 +346,24 @@ class IgGraphqlExecutor(
 
     internal fun parseDiscoveredMedia(rawBody: String, fallbackUsername: String): List<DiscoveredMedia> {
         val root = runCatching { gson.fromJson(rawBody, JsonObject::class.java) }.getOrNull() ?: return emptyList()
-        val edges = root.getAsJsonObject("data")
-            ?.getAsJsonObject("xdt_api__v1__feed__user_timeline_graphql_connection")
-            ?.getAsJsonArray("edges") ?: return emptyList()
+        val dataObj = root.getAsJsonObject("data") ?: root
+
+        // Search in possible connection locations
+        val connection = dataObj.getAsJsonObject("xdt_api__v1__feed__user_timeline_graphql_connection")
+            ?: dataObj.getAsJsonObject("user")?.getAsJsonObject("edge_owner_to_timeline_media")
+            ?: root.getAsJsonObject("user")?.getAsJsonObject("edge_owner_to_timeline_media")
+
+        val edges = connection?.getAsJsonArray("edges")
+            ?: dataObj.getAsJsonArray("items")
+            ?: root.getAsJsonArray("items")
+            ?: return emptyList()
+
         return edges.mapNotNull { el ->
-            val node = el.asJsonObject.getAsJsonObject("node") ?: return@mapNotNull null
+            val obj = el.asJsonObject
+            val node = obj.getAsJsonObject("node") ?: obj
             val mediaId = node.get("pk")?.asString ?: node.get("id")?.asString ?: return@mapNotNull null
-            val user = node.getAsJsonObject("user")
-            val ownerId = user?.get("pk")?.asString ?: user?.get("id")?.asString ?: ""
+            val user = node.getAsJsonObject("user") ?: node.getAsJsonObject("owner")
+            val ownerId = user?.get("pk")?.asString ?: user?.get("id")?.asString ?: user?.get("fbid")?.asString ?: ""
             val ownerName = user?.get("username")?.asString ?: fallbackUsername
             DiscoveredMedia(mediaId = mediaId, ownerUserId = ownerId, ownerUsername = ownerName)
         }
@@ -264,9 +371,11 @@ class IgGraphqlExecutor(
 
     internal fun parseDiscoveredStories(rawBody: String, fallbackReelId: String): List<DiscoveredStory> {
         val root = runCatching { gson.fromJson(rawBody, JsonObject::class.java) }.getOrNull() ?: return emptyList()
-        val reels = root.getAsJsonObject("data")
-            ?.getAsJsonObject("xdt_api__v1__feed__reels_media")
-            ?.getAsJsonArray("reels_media") ?: return emptyList()
+        val dataObj = root.getAsJsonObject("data") ?: root
+        val reels = dataObj.getAsJsonObject("xdt_api__v1__feed__reels_media")
+            ?.getAsJsonArray("reels_media")
+            ?: root.getAsJsonObject("xdt_api__v1__feed__reels_media")?.getAsJsonArray("reels_media")
+            ?: return emptyList()
         val out = mutableListOf<DiscoveredStory>()
         for (reelEl in reels) {
             val reelObj = reelEl.asJsonObject
