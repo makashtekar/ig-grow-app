@@ -107,6 +107,7 @@ const PLAN_JSON_SCHEMA = {
 export class GeminiGrowthPlanner implements PlannerService {
   private readonly ai: GoogleGenAI;
   private readonly model: string;
+  private readonly fallback = new HeuristicFallbackPlanner();
 
   constructor(apiKey: string, model = process.env.GEMINI_MODEL || "gemini-3-flash-preview") {
     this.ai = new GoogleGenAI({ apiKey });
@@ -130,21 +131,26 @@ export class GeminiGrowthPlanner implements PlannerService {
       `Return exactly 7 dailySchedules (dayNumber 1..7) and 10-12 natural commentTemplates.`,
     ].join("\n");
 
-    const response = await this.ai.models.generateContent({
-      model: this.model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseJsonSchema: PLAN_JSON_SCHEMA,
-      },
-    });
+    try {
+      const response = await this.ai.models.generateContent({
+        model: this.model,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseJsonSchema: PLAN_JSON_SCHEMA,
+        },
+      });
 
-    if (!response.text) {
-      throw new Error("Gemini returned an empty response when generating growth plan.");
+      if (!response.text) {
+        throw new Error("Gemini returned an empty response when generating growth plan.");
+      }
+
+      const parsed = JSON.parse(response.text) as GeneratedPlanPayload;
+      return clampGeneratedPlan(parsed, account);
+    } catch (err) {
+      console.warn("Gemini plan generation failed; falling back to heuristic planner:", err);
+      return this.fallback.generateSevenDayPlan(account);
     }
-
-    const parsed = JSON.parse(response.text) as GeneratedPlanPayload;
-    return clampGeneratedPlan(parsed, account);
   }
 
   async suggestGrowthTargets(niche: string, goal = "INCREASE_FOLLOWERS"): Promise<SuggestedTargetsPayload> {
@@ -156,19 +162,24 @@ export class GeminiGrowthPlanner implements PlannerService {
       `Provide 4-6 real, active, high-quality creator handles in this niche (without @), 6-8 relevant hashtags (without #), an authentic tone, and 1-2 sentences of actionable niche advice.`,
     ].join("\n");
 
-    const response = await this.ai.models.generateContent({
-      model: this.model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseJsonSchema: SUGGESTED_TARGETS_SCHEMA,
-      },
-    });
+    try {
+      const response = await this.ai.models.generateContent({
+        model: this.model,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseJsonSchema: SUGGESTED_TARGETS_SCHEMA,
+        },
+      });
 
-    if (!response.text) {
-      throw new Error("Gemini returned empty response for target suggestion.");
+      if (!response.text) {
+        throw new Error("Gemini returned empty response for target suggestion.");
+      }
+      return JSON.parse(response.text) as SuggestedTargetsPayload;
+    } catch (err) {
+      console.warn("Gemini target suggestion failed (spike/503); falling back to heuristic:", err);
+      return this.fallback.suggestGrowthTargets(niche, goal);
     }
-    return JSON.parse(response.text) as SuggestedTargetsPayload;
   }
 
   async generateContextualComment(postCaption: string, niche = "lifestyle", tone = "friendly, authentic, concise"): Promise<string> {
@@ -184,13 +195,18 @@ export class GeminiGrowthPlanner implements PlannerService {
       `- Sound like a real person having a conversation.`,
     ].join("\n");
 
-    const response = await this.ai.models.generateContent({
-      model: this.model,
-      contents: prompt,
-    });
+    try {
+      const response = await this.ai.models.generateContent({
+        model: this.model,
+        contents: prompt,
+      });
 
-    const text = response.text?.trim()?.replace(/^["']|["']$/g, "");
-    return text || "Love how you captured this, thanks for sharing!";
+      const text = response.text?.trim()?.replace(/^["']|["']$/g, "");
+      return text || this.fallback.generateContextualComment(postCaption, niche, tone);
+    } catch (err) {
+      console.warn("Gemini contextual comment generation failed; falling back to heuristic:", err);
+      return this.fallback.generateContextualComment(postCaption, niche, tone);
+    }
   }
 }
 
@@ -200,9 +216,26 @@ export class GeminiGrowthPlanner implements PlannerService {
 export class HeuristicFallbackPlanner implements PlannerService {
   async suggestGrowthTargets(niche: string, goal = "INCREASE_FOLLOWERS"): Promise<SuggestedTargetsPayload> {
     const cleanNiche = niche.toLowerCase().trim();
+    if (cleanNiche.includes("nature") || cleanNiche.includes("travel")) {
+      return {
+        competitorHandles: ["earthpix", "wilderness_culture", "discoverearth", "nature"],
+        targetHashtags: ["naturephotography", "travelgram", "wanderlust", "earthfocus", "roamtheplanet"],
+        recommendedTone: "friendly, authentic, concise",
+        nicheAdvice: "Focus on leaving thoughtful comments on top nature creators within 30 minutes of their post going live to capture active engagement.",
+      };
+    }
+    if (cleanNiche.includes("fitness") || cleanNiche.includes("gym") || cleanNiche.includes("workout")) {
+      return {
+        competitorHandles: ["gym.tips", "fitnessmotivation", "bodybuilding.daily", "workoutvideos"],
+        targetHashtags: ["fitnessmotivation", "gymlife", "workoutroutine", "fitfam", "healthylifestyle"],
+        recommendedTone: "motivational, encouraging, concise",
+        nicheAdvice: "Engage with creators sharing workout routines and answer questions in their comment section to establish authority.",
+      };
+    }
+    const token = cleanNiche.replace(/[^a-z0-9]/g, "");
     return {
-      competitorHandles: [`${cleanNiche}.daily`, `${cleanNiche}creators`, `best.${cleanNiche}`],
-      targetHashtags: [cleanNiche.replace(/\s+/g, ""), `${cleanNiche.replace(/\s+/g, "")}lovers`, "explore", "community"],
+      competitorHandles: [`${token}.daily`, `${token}creators`, `best.${token}`, `${token}community`],
+      targetHashtags: [token, `${token}life`, `${token}love`, "explore", "community"],
       recommendedTone: "friendly, authentic, concise",
       nicheAdvice: `Focus on engaging with recent likers of top ${niche} creators during morning and evening peak hours.`,
     };
