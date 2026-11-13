@@ -189,6 +189,9 @@ object GrowthApiClient {
             level = HttpLoggingInterceptor.Level.BASIC
         }
         val okHttp = OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .addInterceptor(logging)
             .build()
 
