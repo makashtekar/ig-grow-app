@@ -7,6 +7,7 @@
     "dev": "tsc && node --env-file-if-exists=.env --watch dist/src/index.js",
     "build": "tsc",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
+    "migrate": "tsc && node --env-file-if-exists=.env dist/src/migrations/cli.js",
     "test": "tsc && node --test dist/tests/*.test.js"
   },
   "dependencies": {

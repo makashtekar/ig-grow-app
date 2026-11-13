@@ -1,10 +1,10 @@
-import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { createApp } from "./app.js";
 import {
   GeminiGrowthPlanner,
   HeuristicFallbackPlanner,
   type PlannerService,
 } from "./services/geminiPlanner.js";
+import { initFirebaseAdmin } from "./storage/firebaseInit.js";
 import {
   FirestoreGrowthStore,
   type GrowthStore,
@@ -17,17 +17,21 @@ const devBypassAuth =
   process.env.DEV_BYPASS_AUTH === "true" ||
   (process.env.DEV_BYPASS_AUTH !== "false" && !hasFirebaseConfig);
 
-if (storeMode === "firestore" || !devBypassAuth) {
-  if (getApps().length === 0) {
-    initializeApp({
-      credential: applicationDefault(),
-      projectId: process.env.FIREBASE_PROJECT_ID || undefined,
-    });
-  }
-}
+let store: GrowthStore;
 
-const store: GrowthStore =
-  storeMode === "firestore" ? new FirestoreGrowthStore() : new InMemoryGrowthStore();
+if (storeMode === "firestore" || (hasFirebaseConfig && storeMode !== "memory")) {
+  const db = initFirebaseAdmin();
+  if (db) {
+    store = new FirestoreGrowthStore(db);
+    console.log("[ig-grow-api] Using FirestoreGrowthStore (ig_grow_* collections)");
+  } else {
+    console.warn("[ig-grow-api] Firestore init failed; falling back to InMemoryGrowthStore");
+    store = new InMemoryGrowthStore();
+  }
+} else {
+  store = new InMemoryGrowthStore();
+  console.log("[ig-grow-api] Using InMemoryGrowthStore");
+}
 
 const rawGeminiKey = (process.env.GEMINI_API_KEY || "").trim();
 const hasValidGeminiKey =
@@ -37,7 +41,9 @@ const planner: PlannerService = hasValidGeminiKey
   : new HeuristicFallbackPlanner();
 
 if (!hasValidGeminiKey) {
-  console.warn("[ig-grow-api] GEMINI_API_KEY not configured; using HeuristicFallbackPlanner (no billing required).");
+  console.warn(
+    "[ig-grow-api] GEMINI_API_KEY not configured; using HeuristicFallbackPlanner (no billing required)."
+  );
 }
 
 const app = createApp({ store, planner, devBypassAuth });

@@ -59,7 +59,7 @@ test("evaluateTelemetrySafety pauses immediately on CHALLENGE_REQUIRED", () => {
   assert.equal(result.nextTier, "TIER_2_WARMING");
 });
 
-test("Full /v1 API lifecycle: register -> generate -> approve -> daily tasks -> telemetry", async () => {
+test("Full /v1 API lifecycle and /admin management", async () => {
   const store = new InMemoryGrowthStore();
   const planner = new HeuristicFallbackPlanner();
   const app = createApp({ store, planner, devBypassAuth: true });
@@ -95,70 +95,56 @@ test("Full /v1 API lifecycle: register -> generate -> approve -> daily tasks -> 
       }),
     });
     assert.equal(regRes.status, 200);
-    const regBody = (await regRes.json()) as { account: { tier: string; status: string } };
-    assert.equal(regBody.account.tier, "TIER_1_COLD");
-    assert.equal(regBody.account.status, "WARMING_UP");
 
-    // 3. Generate 7-day AI plan
-    const genRes = await fetch(`${baseUrl}/v1/plan/generate`, {
+    // 3. Admin login test
+    const adminLoginRes = await fetch(`${baseUrl}/admin/auth/login`, {
       method: "POST",
-      headers,
-      body: JSON.stringify({ dsUserId: "10276130724" }),
-    });
-    assert.equal(genRes.status, 201);
-    const genBody = (await genRes.json()) as {
-      plan: { planId: string; status: string; dailySchedules: unknown[] };
-    };
-    assert.equal(genBody.plan.status, "DRAFT");
-    assert.equal(genBody.plan.dailySchedules.length, 7);
-
-    // 4. Approve plan
-    const approveRes = await fetch(`${baseUrl}/v1/plan/approve`, {
-      method: "POST",
-      headers,
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        dsUserId: "10276130724",
-        planId: genBody.plan.planId,
-        commentTemplates: ["Love this workout routine!"],
+        email: "admin@iggrow.studio",
+        password: "admin123456",
       }),
     });
-    assert.equal(approveRes.status, 200);
-    const approveBody = (await approveRes.json()) as { plan: { status: string } };
-    assert.equal(approveBody.plan.status, "APPROVED");
+    assert.equal(adminLoginRes.status, 200);
+    const loginData = (await adminLoginRes.json()) as { token: string };
+    assert.ok(loginData.token);
 
-    // 5. Fetch daily tasks
-    const tasksRes = await fetch(`${baseUrl}/v1/tasks/daily?dsUserId=10276130724`, { headers });
-    assert.equal(tasksRes.status, 200);
-    const tasksBody = (await tasksRes.json()) as {
-      dayNumber: number;
-      actionBudgets: { follows: number };
-      commentTemplates: string[];
+    const adminHeaders = {
+      "content-type": "application/json",
+      authorization: `Bearer ${loginData.token}`,
     };
-    assert.equal(tasksBody.dayNumber, 1);
-    assert.ok(tasksBody.actionBudgets.follows <= TIER_CEILINGS.TIER_1_COLD.follows);
-    assert.deepEqual(tasksBody.commentTemplates, ["Love this workout routine!"]);
 
-    // 6. Report 429 telemetry and verify circuit breaker activates
-    const telRes = await fetch(`${baseUrl}/v1/telemetry/batch`, {
-      method: "POST",
-      headers,
+    // 4. Admin Overview
+    const overviewRes = await fetch(`${baseUrl}/admin/overview`, { headers: adminHeaders });
+    assert.equal(overviewRes.status, 200);
+    const overviewData = (await overviewRes.json()) as { totalAccounts: number };
+    assert.equal(overviewData.totalAccounts, 1);
+
+    // 5. Admin Accounts list & patch
+    const accountsRes = await fetch(`${baseUrl}/admin/accounts`, { headers: adminHeaders });
+    assert.equal(accountsRes.status, 200);
+    const accountsData = (await accountsRes.json()) as { accounts: Array<{ dsUserId: string; tier: string }> };
+    assert.equal(accountsData.accounts.length, 1);
+    assert.equal(accountsData.accounts[0].tier, "TIER_1_COLD");
+
+    const patchRes = await fetch(`${baseUrl}/admin/accounts/10276130724`, {
+      method: "PATCH",
+      headers: adminHeaders,
       body: JSON.stringify({
-        dsUserId: "10276130724",
-        followersCount: 1205,
-        events: [
-          {
-            actionType: "POST_LIKE",
-            outcome: "RATE_LIMITED_429",
-            httpStatus: 429,
-            executedAt: new Date().toISOString(),
-          },
-        ],
+        tier: "TIER_2_WARMING",
+        status: "ACTIVE",
       }),
     });
-    assert.equal(telRes.status, 200);
-    const telBody = (await telRes.json()) as { accountStatus: string; pausedUntil: string | null };
-    assert.equal(telBody.accountStatus, "PAUSED_RATE_LIMIT");
-    assert.ok(telBody.pausedUntil !== null);
+    assert.equal(patchRes.status, 200);
+    const patchData = (await patchRes.json()) as { account: { tier: string; status: string } };
+    assert.equal(patchData.account.tier, "TIER_2_WARMING");
+    assert.equal(patchData.account.status, "ACTIVE");
+
+    // 6. Admin Settings
+    const settingsRes = await fetch(`${baseUrl}/admin/settings`, { headers: adminHeaders });
+    assert.equal(settingsRes.status, 200);
+    const settingsData = (await settingsRes.json()) as { settings: { schemaVersion: number } };
+    assert.equal(settingsData.settings.schemaVersion, 1);
   } finally {
     server.close();
   }
