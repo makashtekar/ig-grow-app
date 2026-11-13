@@ -450,15 +450,24 @@ class GrowthActionRunner(
     }
 
     private fun extractCompetitorHandles(tasks: DailyTasksResponse): List<String> {
-        val targets = tasks.discoverySources
+        val creatorTargets = tasks.discoverySources
+            .filter { it.type != "HASHTAG" && !it.target.startsWith("#") }
             .sortedByDescending { it.priority }
             .map { it.target.trim().removePrefix("@") }
             .filter { it.isNotBlank() }
             .distinct()
 
-        return targets.ifEmpty {
-            listOf("instagram")
+        if (creatorTargets.isNotEmpty()) {
+            return creatorTargets
         }
+
+        // Fallback: strip # or @ and use available targets
+        return tasks.discoverySources
+            .sortedByDescending { it.priority }
+            .map { it.target.trim().removePrefix("@").removePrefix("#") }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .ifEmpty { listOf("instagram") }
     }
 
     private fun recordReport(actionStore: ActionQueueStore, report: SingleStepReport): SingleStepReport {
