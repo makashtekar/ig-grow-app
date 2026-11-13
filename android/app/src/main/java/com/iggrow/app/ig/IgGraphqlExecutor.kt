@@ -115,43 +115,113 @@ class IgGraphqlExecutor(
 
     fun likeMedia(session: IgSession, mediaId: String, trackingToken: String = ""): IgActionResult {
         val ready = ensureWebTokens(session)
+        val cleanMediaId = mediaId.split("_").first()
         val variables = gson.toJson(
             mapOf(
                 "input" to mapOf(
                     "actor_id" to ready.dsUserId,
                     "client_mutation_id" to UUID.randomUUID().toString(),
                     "container_module" to "feed_timeline",
-                    "media_id" to mediaId,
+                    "media_id" to cleanMediaId,
                     "tracking_token" to trackingToken
                 )
             )
         )
-        return executeMutation(
+        val res = executeMutation(
             session = ready,
             friendlyName = "usePolarisLikeMediaXIGLikeMutation",
             docId = DOC_ID_LIKE_MEDIA,
             variablesJson = variables,
             referer = "https://www.instagram.com/"
         )
+        if (res.outcome == IgExecutionOutcome.SUCCESS) return res
+
+        // REST fallback: POST https://www.instagram.com/api/v1/web/likes/<mediaId>/like/
+        logger("GraphQL like failed; trying REST endpoint https://www.instagram.com/api/v1/web/likes/$cleanMediaId/like/")
+        return executeRestLike(ready, cleanMediaId)
+    }
+
+    private fun executeRestLike(session: IgSession, mediaId: String): IgActionResult {
+        val url = "https://www.instagram.com/api/v1/web/likes/$mediaId/like/"
+        val req = Request.Builder()
+            .url(url)
+            .post(FormBody.Builder().build())
+            .header("cookie", session.cookieHeader)
+            .header("user-agent", session.userAgent)
+            .header("x-csrftoken", session.csrfToken)
+            .header("x-ig-app-id", (session.igAppId as String?).orEmpty().ifBlank { "936619743392459" })
+            .header("x-asbd-id", (session.asbdId as String?).orEmpty().ifBlank { "359341" })
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("referer", "https://www.instagram.com/")
+            .header("origin", "https://www.instagram.com")
+            .build()
+
+        return try {
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                logger("<- HTTP ${resp.code} | rest_like | body=${body.take(200)}")
+                classifyResponse(resp.code, body)
+            }
+        } catch (ex: Exception) {
+            logger("!! Exception | rest_like | err=${ex.message}")
+            IgActionResult(IgExecutionOutcome.FAILED, 0, ex.message)
+        }
     }
 
     fun commentMedia(session: IgSession, mediaId: String, commentText: String): IgActionResult {
         val ready = ensureWebTokens(session)
+        val cleanMediaId = mediaId.split("_").first()
         val variables = gson.toJson(
             mapOf(
                 "data" to mapOf(
+                    "client_mutation_id" to UUID.randomUUID().toString(),
                     "comment_text" to commentText,
-                    "media_id" to mediaId
+                    "media_id" to cleanMediaId
                 )
             )
         )
-        return executeMutation(
+        val res = executeMutation(
             session = ready,
             friendlyName = "PolarisPostCommentInputRevampedMutation",
             docId = DOC_ID_COMMENT_MEDIA,
             variablesJson = variables,
             referer = "https://www.instagram.com/"
         )
+        if (res.outcome == IgExecutionOutcome.SUCCESS) return res
+
+        // REST fallback: POST https://www.instagram.com/api/v1/web/comments/<mediaId>/add/
+        logger("GraphQL comment failed; trying REST endpoint https://www.instagram.com/api/v1/web/comments/$cleanMediaId/add/")
+        return executeRestComment(ready, cleanMediaId, commentText)
+    }
+
+    private fun executeRestComment(session: IgSession, mediaId: String, commentText: String): IgActionResult {
+        val url = "https://www.instagram.com/api/v1/web/comments/$mediaId/add/"
+        val form = FormBody.Builder()
+            .add("comment_text", commentText)
+            .build()
+        val req = Request.Builder()
+            .url(url)
+            .post(form)
+            .header("cookie", session.cookieHeader)
+            .header("user-agent", session.userAgent)
+            .header("x-csrftoken", session.csrfToken)
+            .header("x-ig-app-id", (session.igAppId as String?).orEmpty().ifBlank { "936619743392459" })
+            .header("x-asbd-id", (session.asbdId as String?).orEmpty().ifBlank { "359341" })
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("referer", "https://www.instagram.com/")
+            .header("origin", "https://www.instagram.com")
+            .build()
+
+        return try {
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                logger("<- HTTP ${resp.code} | rest_comment | body=${body.take(200)}")
+                classifyResponse(resp.code, body)
+            }
+        } catch (ex: Exception) {
+            logger("!! Exception | rest_comment | err=${ex.message}")
+            IgActionResult(IgExecutionOutcome.FAILED, 0, ex.message)
+        }
     }
 
     fun viewStory(
