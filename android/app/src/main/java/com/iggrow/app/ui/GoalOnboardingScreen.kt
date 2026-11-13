@@ -11,27 +11,41 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.iggrow.app.cloud.RegisterAccountRequest
+import com.iggrow.app.cloud.SuggestTargetsResponse
 import com.iggrow.app.session.IgSession
 import com.iggrow.app.ui.theme.GradientButton
 import com.iggrow.app.ui.theme.StudioCard
 import com.iggrow.app.ui.theme.StudioColors
+import kotlinx.coroutines.launch
 import java.util.TimeZone
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,6 +54,7 @@ fun GoalOnboardingScreen(
     session: IgSession,
     isSubmitting: Boolean,
     errorMessage: String?,
+    onSuggestTargets: (suspend (String, String) -> SuggestTargetsResponse)? = null,
     onSubmitGoal: (RegisterAccountRequest) -> Unit
 ) {
     var selectedGoal by remember { mutableStateOf("INCREASE_FOLLOWERS") }
@@ -47,6 +62,9 @@ fun GoalOnboardingScreen(
     var competitors by remember { mutableStateOf("") }
     var hashtags by remember { mutableStateOf("") }
     var tone by remember { mutableStateOf("friendly, authentic, concise") }
+    var isSuggesting by remember { mutableStateOf(false) }
+    var nicheAdvice by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
     val goals = listOf(
         "INCREASE_FOLLOWERS" to "Followers",
@@ -108,6 +126,61 @@ fun GoalOnboardingScreen(
                         label = { Text("Your Niche (e.g. Home Workouts, Nature, SaaS)") },
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Competitors & Hashtags", style = MaterialTheme.typography.labelMedium, color = StudioColors.TextSecondary)
+                        if (onSuggestTargets != null) {
+                            TextButton(
+                                onClick = {
+                                    if (niche.isNotBlank()) {
+                                        scope.launch {
+                                            isSuggesting = true
+                                            runCatching {
+                                                onSuggestTargets(niche, selectedGoal)
+                                            }.onSuccess { suggestions ->
+                                                competitors = suggestions.competitorHandles.joinToString(", ")
+                                                hashtags = suggestions.targetHashtags.joinToString(", ")
+                                                if (suggestions.recommendedTone.isNotBlank()) {
+                                                    tone = suggestions.recommendedTone
+                                                }
+                                                nicheAdvice = suggestions.nicheAdvice
+                                            }
+                                            isSuggesting = false
+                                        }
+                                    }
+                                },
+                                enabled = niche.isNotBlank() && !isSuggesting
+                            ) {
+                                if (isSuggesting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = StudioColors.Amber)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("AI Brain Thinking...", style = MaterialTheme.typography.labelSmall, color = StudioColors.Amber)
+                                } else {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = StudioColors.Amber, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Auto-Fill with AI", style = MaterialTheme.typography.labelSmall, color = StudioColors.Amber, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+
+                    if (!nicheAdvice.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = StudioColors.SurfaceElevated,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                        ) {
+                            Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Lightbulb, contentDescription = null, tint = StudioColors.Amber, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(nicheAdvice!!, style = MaterialTheme.typography.bodySmall, color = StudioColors.TextPrimary)
+                            }
+                        }
+                    }
 
                     OutlinedTextField(
                         value = competitors,

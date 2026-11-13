@@ -8,9 +8,43 @@ export interface GeneratedPlanPayload {
   commentTemplates: string[];
 }
 
+export interface SuggestedTargetsPayload {
+  competitorHandles: string[];
+  targetHashtags: string[];
+  recommendedTone: string;
+  nicheAdvice: string;
+}
+
 export interface PlannerService {
   generateSevenDayPlan(account: IgAccountRecord): Promise<GeneratedPlanPayload>;
+  suggestGrowthTargets(niche: string, goal?: string): Promise<SuggestedTargetsPayload>;
+  generateContextualComment(postCaption: string, niche?: string, tone?: string): Promise<string>;
 }
+
+const SUGGESTED_TARGETS_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    competitorHandles: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "4-6 popular, active Instagram creator handles in this niche without @ prefix.",
+    },
+    targetHashtags: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "6-8 specific, high-intent hashtags for this niche without # prefix.",
+    },
+    recommendedTone: {
+      type: Type.STRING,
+      description: "Recommended comment tone, e.g. 'friendly, authentic, concise'.",
+    },
+    nicheAdvice: {
+      type: Type.STRING,
+      description: "1-2 sentences of actionable strategic advice for growing in this niche.",
+    },
+  },
+  required: ["competitorHandles", "targetHashtags", "recommendedTone", "nicheAdvice"],
+};
 
 const PLAN_JSON_SCHEMA = {
   type: Type.OBJECT,
@@ -112,12 +146,75 @@ export class GeminiGrowthPlanner implements PlannerService {
     const parsed = JSON.parse(response.text) as GeneratedPlanPayload;
     return clampGeneratedPlan(parsed, account);
   }
+
+  async suggestGrowthTargets(niche: string, goal = "INCREASE_FOLLOWERS"): Promise<SuggestedTargetsPayload> {
+    const prompt = [
+      `You are an Instagram organic growth strategist.`,
+      `Suggest target accounts and hashtags for an Instagram creator with:`,
+      `- Niche: ${niche}`,
+      `- Primary Goal: ${goal}`,
+      `Provide 4-6 real, active, high-quality creator handles in this niche (without @), 6-8 relevant hashtags (without #), an authentic tone, and 1-2 sentences of actionable niche advice.`,
+    ].join("\n");
+
+    const response = await this.ai.models.generateContent({
+      model: this.model,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseJsonSchema: SUGGESTED_TARGETS_SCHEMA,
+      },
+    });
+
+    if (!response.text) {
+      throw new Error("Gemini returned empty response for target suggestion.");
+    }
+    return JSON.parse(response.text) as SuggestedTargetsPayload;
+  }
+
+  async generateContextualComment(postCaption: string, niche = "lifestyle", tone = "friendly, authentic, concise"): Promise<string> {
+    const prompt = [
+      `You are a genuine Instagram user in the '${niche}' niche.`,
+      `The creator's post caption is: "${postCaption}".`,
+      `Write one natural, engaging 1-sentence comment that specifically references the context or subject mentioned in the caption.`,
+      `Tone: ${tone}.`,
+      `Rules:`,
+      `- Strictly 1 sentence.`,
+      `- Do not use generic filler like "great post", "nice pic", "love this photo".`,
+      `- Do not use hashtags or emojis in excess (max 1 natural emoji).`,
+      `- Sound like a real person having a conversation.`,
+    ].join("\n");
+
+    const response = await this.ai.models.generateContent({
+      model: this.model,
+      contents: prompt,
+    });
+
+    const text = response.text?.trim()?.replace(/^["']|["']$/g, "");
+    return text || "Love how you captured this, thanks for sharing!";
+  }
 }
 
 /**
  * Deterministic fallback planner used in local dev/tests when GEMINI_API_KEY is absent.
  */
 export class HeuristicFallbackPlanner implements PlannerService {
+  async suggestGrowthTargets(niche: string, goal = "INCREASE_FOLLOWERS"): Promise<SuggestedTargetsPayload> {
+    const cleanNiche = niche.toLowerCase().trim();
+    return {
+      competitorHandles: [`${cleanNiche}.daily`, `${cleanNiche}creators`, `best.${cleanNiche}`],
+      targetHashtags: [cleanNiche.replace(/\s+/g, ""), `${cleanNiche.replace(/\s+/g, "")}lovers`, "explore", "community"],
+      recommendedTone: "friendly, authentic, concise",
+      nicheAdvice: `Focus on engaging with recent likers of top ${niche} creators during morning and evening peak hours.`,
+    };
+  }
+
+  async generateContextualComment(postCaption: string, niche = "lifestyle", tone = "friendly, authentic, concise"): Promise<string> {
+    if (postCaption.toLowerCase().includes("view") || postCaption.toLowerCase().includes("sunset")) {
+      return "The lighting and perspective in this shot are stunning!";
+    }
+    return `Such a thoughtful perspective on this — thanks for sharing!`;
+  }
+
   async generateSevenDayPlan(account: IgAccountRecord): Promise<GeneratedPlanPayload> {
     const ceiling = TIER_CEILINGS[account.tier];
     const primaryCompetitor = account.competitorHandles[0] ?? account.username;

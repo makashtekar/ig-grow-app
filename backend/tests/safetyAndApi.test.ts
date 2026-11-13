@@ -145,6 +145,31 @@ test("Full /v1 API lifecycle and /admin management", async () => {
     assert.equal(settingsRes.status, 200);
     const settingsData = (await settingsRes.json()) as { settings: { schemaVersion: number } };
     assert.equal(settingsData.settings.schemaVersion, 1);
+
+    // 7. AI Target Suggestions
+    const suggestRes = await fetch(`${baseUrl}/v1/ai/suggest-targets`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ niche: "nature photography", goal: "INCREASE_FOLLOWERS" }),
+    });
+    assert.equal(suggestRes.status, 200);
+    const suggestData = (await suggestRes.json()) as { competitorHandles: string[]; targetHashtags: string[] };
+    assert.ok(suggestData.competitorHandles.length > 0);
+    assert.ok(suggestData.targetHashtags.length > 0);
+
+    // 8. AI Contextual Comment Generation
+    const commentRes = await fetch(`${baseUrl}/v1/ai/generate-comment`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        postCaption: "Golden sunset over the ocean tonight",
+        niche: "nature photography",
+        tone: "friendly, authentic",
+      }),
+    });
+    assert.equal(commentRes.status, 200);
+    const commentData = (await commentRes.json()) as { comment: string };
+    assert.ok(commentData.comment.length > 5);
   } finally {
     server.close();
   }

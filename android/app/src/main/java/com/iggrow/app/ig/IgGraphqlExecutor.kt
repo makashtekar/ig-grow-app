@@ -20,7 +20,8 @@ data class IgActionResult(
 data class DiscoveredMedia(
     val mediaId: String,
     val ownerUserId: String,
-    val ownerUsername: String
+    val ownerUsername: String,
+    val caption: String = ""
 )
 
 data class DiscoveredStory(
@@ -435,7 +436,17 @@ class IgGraphqlExecutor(
             val user = node.getAsJsonObject("user") ?: node.getAsJsonObject("owner")
             val ownerId = user?.get("pk")?.asString ?: user?.get("id")?.asString ?: user?.get("fbid")?.asString ?: ""
             val ownerName = user?.get("username")?.asString ?: fallbackUsername
-            DiscoveredMedia(mediaId = mediaId, ownerUserId = ownerId, ownerUsername = ownerName)
+            val captionText = node.getAsJsonObject("caption")?.get("text")?.asString
+                ?: node.getAsJsonObject("edge_media_to_caption")
+                    ?.getAsJsonArray("edges")?.firstOrNull()?.asJsonObject
+                    ?.getAsJsonObject("node")?.get("text")?.asString
+                ?: ""
+            DiscoveredMedia(
+                mediaId = mediaId,
+                ownerUserId = ownerId,
+                ownerUsername = ownerName,
+                caption = captionText
+            )
         }
     }
 

@@ -133,6 +133,9 @@ class MainActivity : ComponentActivity() {
                             session = activeSession,
                             isSubmitting = isBusy,
                             errorMessage = errorMessage,
+                            onSuggestTargets = { niche, goal ->
+                                api.suggestTargets(activeSession.dsUserId, com.iggrow.app.cloud.SuggestTargetsRequest(niche, goal))
+                            },
                             onSubmitGoal = { request ->
                                 scope.launch {
                                     isBusy = true
@@ -362,6 +365,9 @@ class MainActivity : ComponentActivity() {
                                             session = activeSession,
                                             isSubmitting = isBusy,
                                             errorMessage = errorMessage,
+                                            onSuggestTargets = { niche, goal ->
+                                                api.suggestTargets(activeSession.dsUserId, com.iggrow.app.cloud.SuggestTargetsRequest(niche, goal))
+                                            },
                                             onSubmitGoal = { request ->
                                                 scope.launch {
                                                     isBusy = true

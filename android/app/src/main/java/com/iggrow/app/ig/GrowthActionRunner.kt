@@ -366,7 +366,24 @@ class GrowthActionRunner(
 
             val candidate = mediaList.firstOrNull { !actionStore.hasInteractedRecently("comment:${it.mediaId}") }
                 ?: mediaList.first()
-            val comment = tasks.commentTemplates.randomOrNull() ?: "Love this!"
+
+            // Contextual AI comment generation: analyzes actual post caption in real-time
+            val comment = if (candidate.caption.isNotBlank()) {
+                val aiComment = runCatching {
+                    api.generateContextualComment(
+                        devUid = session.dsUserId,
+                        body = com.iggrow.app.cloud.GenerateCommentRequest(
+                            postCaption = candidate.caption.take(300),
+                            niche = tasks.focus,
+                            tone = "friendly, authentic, concise"
+                        )
+                    ).comment
+                }.getOrNull()
+                aiComment?.takeIf { it.isNotBlank() } ?: tasks.commentTemplates.randomOrNull() ?: "Love this perspective!"
+            } else {
+                tasks.commentTemplates.randomOrNull() ?: "Love this perspective!"
+            }
+
             val res = executor.commentMedia(session, candidate.mediaId, comment)
             if (res.outcome == IgExecutionOutcome.SUCCESS) {
                 actionStore.markInteracted("comment:${candidate.mediaId}")

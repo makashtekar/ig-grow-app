@@ -117,12 +117,46 @@ data class TelemetryBatchResponse(
     val safetyReason: String?
 )
 
+data class SuggestTargetsRequest(
+    val niche: String,
+    val goal: String? = null
+)
+
+data class SuggestTargetsResponse(
+    val competitorHandles: List<String>,
+    val targetHashtags: List<String>,
+    val recommendedTone: String,
+    val nicheAdvice: String
+)
+
+data class GenerateCommentRequest(
+    val postCaption: String,
+    val niche: String? = null,
+    val tone: String? = null
+)
+
+data class GenerateCommentResponse(
+    val comment: String
+)
+
 interface GrowthApiService {
     @POST("v1/account/register")
     suspend fun registerAccount(
         @Header("x-dev-uid") devUid: String,
         @Body body: RegisterAccountRequest
     ): RegisterAccountResponse
+
+    @POST("v1/ai/suggest-targets")
+    suspend fun suggestTargets(
+        @Header("x-dev-uid") devUid: String,
+        @Body body: SuggestTargetsRequest
+    ): SuggestTargetsResponse
+
+    @POST("v1/ai/generate-comment")
+    suspend fun generateContextualComment(
+        @Header("x-dev-uid") devUid: String,
+        @Body body: GenerateCommentRequest
+    ): GenerateCommentResponse
 
     @POST("v1/plan/generate")
     suspend fun generatePlan(

@@ -224,5 +224,48 @@ export function createV1Router(store: GrowthStore, planner: PlannerService): Rou
     });
   });
 
+  const SuggestTargetsSchema = z.object({
+    niche: z.string().min(1),
+    goal: z.string().optional(),
+  });
+
+  router.post("/ai/suggest-targets", async (req: AuthenticatedRequest, res: Response) => {
+    const parsed = SuggestTargetsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid niche payload", details: parsed.error.flatten() });
+      return;
+    }
+    try {
+      const suggestions = await planner.suggestGrowthTargets(parsed.data.niche, parsed.data.goal);
+      res.status(200).json(suggestions);
+    } catch (err: any) {
+      res.status(500).json({ error: "Failed to generate target suggestions", message: err.message });
+    }
+  });
+
+  const GenerateCommentSchema = z.object({
+    postCaption: z.string(),
+    niche: z.string().optional(),
+    tone: z.string().optional(),
+  });
+
+  router.post("/ai/generate-comment", async (req: AuthenticatedRequest, res: Response) => {
+    const parsed = GenerateCommentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+      return;
+    }
+    try {
+      const comment = await planner.generateContextualComment(
+        parsed.data.postCaption,
+        parsed.data.niche,
+        parsed.data.tone
+      );
+      res.status(200).json({ comment });
+    } catch (err: any) {
+      res.status(500).json({ error: "Failed to generate contextual comment", message: err.message });
+    }
+  });
+
   return router;
 }
