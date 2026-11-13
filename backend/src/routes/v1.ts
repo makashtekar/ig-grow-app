@@ -129,6 +129,33 @@ export function createV1Router(store: GrowthStore, planner: PlannerService): Rou
     res.status(200).json({ plan: updatedPlan });
   });
 
+  router.get("/plan/active", async (req: AuthenticatedRequest, res: Response) => {
+    const dsUserId = typeof req.query.dsUserId === "string" ? req.query.dsUserId : "";
+    if (!dsUserId) {
+      res.status(400).json({ error: "dsUserId query parameter is required" });
+      return;
+    }
+
+    const account = await store.getAccount(dsUserId);
+    if (!account || account.ownerUid !== req.uid) {
+      res.status(404).json({ error: "Instagram account not found" });
+      return;
+    }
+
+    if (!account.activePlanId) {
+      res.status(404).json({ error: "No active growth plan for this account" });
+      return;
+    }
+
+    const plan = await store.getPlan(account.activePlanId);
+    if (!plan) {
+      res.status(404).json({ error: "Active plan not found" });
+      return;
+    }
+
+    res.status(200).json({ plan });
+  });
+
   router.get("/tasks/daily", async (req: AuthenticatedRequest, res: Response) => {
     const dsUserId = typeof req.query.dsUserId === "string" ? req.query.dsUserId : "";
     if (!dsUserId) {

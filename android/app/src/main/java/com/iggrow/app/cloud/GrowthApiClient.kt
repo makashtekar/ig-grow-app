@@ -170,6 +170,12 @@ interface GrowthApiService {
         @Body body: ApprovePlanRequest
     ): PlanResponse
 
+    @GET("v1/plan/active")
+    suspend fun getActivePlan(
+        @Header("x-dev-uid") devUid: String,
+        @Query("dsUserId") dsUserId: String
+    ): PlanResponse
+
     @GET("v1/tasks/daily")
     suspend fun getDailyTasks(
         @Header("x-dev-uid") devUid: String,

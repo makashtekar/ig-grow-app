@@ -111,6 +111,18 @@ class MainActivity : ComponentActivity() {
                         runCatching {
                             api.getDailyTasks(activeSession.dsUserId, activeSession.dsUserId)
                         }.onSuccess { dailyTasks = it }
+                        runCatching {
+                            api.getActivePlan(activeSession.dsUserId, activeSession.dsUserId)
+                        }.onSuccess { draftPlan = it.plan }
+                    }
+                }
+
+                LaunchedEffect(selectedTab) {
+                    val activeSession = session
+                    if (selectedTab == StudioTab.PLAN && draftPlan == null && activeSession != null) {
+                        runCatching {
+                            api.getActivePlan(activeSession.dsUserId, activeSession.dsUserId)
+                        }.onSuccess { draftPlan = it.plan }
                     }
                 }
 
@@ -338,7 +350,7 @@ class MainActivity : ComponentActivity() {
                                             plan = activePlan,
                                             isApproving = isBusy,
                                             modifier = Modifier.padding(padding),
-                                            onEditGoalSetup = { currentRoute = FlowRoute.GOAL_SETUP },
+                                            onEditGoalSetup = { draftPlan = null },
                                             onApprove = { approvedComments, editedSchedules ->
                                                 scope.launch {
                                                     isBusy = true
